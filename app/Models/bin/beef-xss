@@ -1,0 +1,79 @@
+#!/bin/bash
+
+## Colour for bash prompt
+RED="\033[01;31m"
+GREEN="\033[01;32m"
+YELLOW="\033[01;33m"
+RESET="\033[00m"
+
+## Define config_file
+config_file='/etc/beef-xss/config.yaml'
+
+## Check if running as root
+if [[ $EUID -ne 0 ]]; then
+   echo -e "${RED}[-]${RESET} This script must be ${RED}run as root${RESET}" 1>&2
+   exit 1
+fi
+
+## Discover port used in config
+PORT=$(ruby -ryaml -e "print YAML.load_file('/etc/beef-xss/config.yaml')['beef']['http']['port']")
+URL="http://127.0.0.1:${PORT}/ui/panel"
+
+## Check if we are using default credentials
+USER=$(ruby -ryaml -e "print YAML.load_file('/etc/beef-xss/config.yaml')['beef']['credentials']['user']")
+PASSWD=$(ruby -ryaml -e "print YAML.load_file('/etc/beef-xss/config.yaml')['beef']['credentials']['passwd']")
+if [[ $USER = "beef" ]] && [[ $PASSWD = "beef" ]]; then
+    echo -e "${RED}[-]${RESET} You are using the ${RED}Default credentials${RESET}"
+    while [ $PASSWD = beef ]; do
+       echo -e "${RED}[-]${RESET} (Password must be different from \"beef\")"
+       echo -ne "${RED}[-]${RESET} Please type a new password for the beef user: "
+       read -s PASSWD
+       echo ""
+       ruby /usr/share/beef-xss/set-new-pass.rb $config_file $PASSWD
+    done
+fi
+
+## Check if something is already on the port
+if lsof -Pi :${PORT} -sTCP:LISTEN -t >/dev/null ; then
+  echo -e "${YELLOW}[i]${RESET} Something is already using port: ${PORT}/tcp"
+  lsof -Pi :${PORT} -sTCP:LISTEN
+  echo ""
+  ps -f $(lsof -Pi :${PORT} -sTCP:LISTEN -t)
+  echo ""
+fi
+
+## Display warning if geoip is enabled and database is missing
+GEOIP_ENABLED=$(ruby -ryaml -e "print YAML.load_file('/etc/beef-xss/config.yaml')['beef']['geoip']['enable']")
+GEOIP_LOCATION=$(ruby -ryaml -e "print YAML.load_file('/etc/beef-xss/config.yaml')['beef']['geoip']['database']")
+if $GEOIP_ENABLED && [ ! -e $GEOIP_LOCATION ]; then
+    echo -e "${YELLOW}[i]${RESET} GeoIP database is missing"
+    echo -e "${YELLOW}[i]${RESET} Run geoipupdate to download / update Maxmind GeoIP database"
+fi
+
+## Display information to user
+echo -e "${GREEN}[*]${RESET} Please wait for the BeEF service to start."
+echo -e "${GREEN}[*]${RESET}"
+echo -e "${GREEN}[*]${RESET} You might need to refresh your browser once it opens."
+echo -e "${GREEN}[*]${RESET}"
+echo -e "${GREEN}[*]${RESET}  Web UI: ${URL}"
+echo -e "${GREEN}[*]${RESET}    Hook: <script src=\"http://<IP>:${PORT}/hook.js\"></script>"
+echo -e "${GREEN}[*]${RESET} Example: <script src=\"http://127.0.0.1:${PORT}/hook.js\"></script>\n"
+
+## Start service
+systemctl start beef-xss
+sleep 5s
+
+## Check service status
+systemctl --no-pager status beef-xss
+
+## Countdown
+echo -ne "\n${GREEN}[*]${RESET} Opening Web UI (${URL}) in: "
+for x in {5..1}; do
+  echo -n "$x... "
+  sleep 1s
+done
+echo ""
+
+## Open browser
+xdg-open "${URL}" 2>/dev/null >/dev/null &
+

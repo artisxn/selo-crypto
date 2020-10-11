@@ -1,0 +1,4 @@
+#! /usr/bin/python2
+
+from wx.py.PyShell import main
+main()

@@ -1,0 +1,306 @@
+#! /usr/bin/python
+# Copyright (c) 2012-2013, Itzik Kotler
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#     * Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
+#
+#     * Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#
+#     * Neither the name of the author nor the names of its contributors may
+#       be used to endorse or promote products derived from this software without
+#       specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+import sys
+
+try:
+
+    import readline
+
+except ImportError:
+
+    # Windows ...
+
+    pass
+
+import code
+import codeop
+import argparse
+import logging
+import os
+import atexit
+import runpy
+import multiprocessing
+import pprint
+
+
+try:
+
+    import _preamble
+
+except ImportError:
+
+    sys.exc_clear()
+
+
+import pythonect
+import pythonect.internal.parsers
+
+
+# Pythonect Console
+
+class PythonectCompile(codeop.Compile):
+
+    def __init__(self):
+
+        codeop.Compile.__init__(self)
+
+    def __call__(self, source, filename, symbol):
+
+        if source[-1] == '\\':
+            return None
+
+        return source.replace('\\\n', '')
+
+
+class PythonectCommandCompiler(codeop.CommandCompiler):
+
+    def __init__(self):
+
+        codeop.CommandCompiler.__init__(self)
+
+        self.compiler = PythonectCompile()
+
+
+class PythonectInteractiveConsole(code.InteractiveConsole):
+
+    def __init__(self, locals=None, histfile=os.path.expanduser("~/.pythonect_history")):
+
+        code.InteractiveConsole.__init__(self, locals)
+
+        self.compile = PythonectCommandCompiler()
+
+        self.init_history(histfile)
+
+    def init_history(self, histfile):
+
+        try:
+
+            readline.read_history_file(histfile)
+
+        except Exception:
+
+            pass
+
+        atexit.register(self.save_history, histfile)
+
+    def save_history(self, histfile):
+
+        try:
+
+            readline.write_history_file(histfile)
+
+        # i.e. NameError: name 'readline' is not defined ...
+
+        except NameError:
+
+            pass
+
+    # This is a cut & paste from /usr/lib/python2.7/code.py
+    # Except we're not calling `exec` statement
+
+    def runcode(self, code_):
+
+        try:
+
+            return_value = pythonect.eval(code_, {}, self.locals)
+
+            # Meaningful Return Value?
+
+            if return_value is not None:
+
+                # String?
+
+                if isinstance(return_value, basestring):
+
+                    # Enclose in single quotes
+
+                    return_value = "'" + return_value + "'"
+
+                self.write(str(return_value) + '\n')
+
+                # Keep return_value for further reference or reset to None?
+
+                if return_value is False or return_value is True:
+
+                    # Reset locals to None
+
+                    self.locals['_'] = None
+
+        except SystemExit:
+
+            raise
+
+        except:
+
+            self.showtraceback()
+
+        else:
+
+            if code.softspace(sys.stdout, 0):
+
+                print
+
+
+def main(argv=sys.argv):
+
+    locals_ = {}
+    globals_ = {}
+
+    verbose_levels = [logging.ERROR, logging.WARNING, logging.INFO, logging.DEBUG]
+
+    # Pythonect's Banner (for -V, --version purposes)
+
+    banner = "Pythonect %s" % pythonect.__version__
+
+    # Parse command-line arguments
+
+    parser = argparse.ArgumentParser(prog='pythonect')
+
+    parser.add_argument('script', metavar='file', nargs='?', type=argparse.FileType('rt'), help='program read from script file')
+    parser.add_argument('arg', metavar='arg', nargs='*', help='arguments passed to program in sys.argv[1:]')
+    parser.add_argument('--verbose', '-v', action='count', default=0)
+    parser.add_argument('--version', '-V', action='version', version=banner)
+    parser.add_argument('--interactive', '-i', action='store_true', default=False, help='inspect interactively after running script')
+    parser.add_argument('--command', '-c', metavar='cmd', nargs='*', help='program passed in as string')
+    parser.add_argument('--module', '-m', metavar='mod', action='store', help='run library module as a script')
+    parser.add_argument('--max-threads-per-flow', '-mt', metavar='N', default=multiprocessing.cpu_count() + 1, type=int, action='store', help='max threads per flow')
+
+    args = parser.parse_args(args=argv[1:])
+
+    # Setup logging level
+
+    logging.basicConfig(level=verbose_levels[args.verbose % 4], format="%(levelname)s:%(message)s")
+
+    logging.info('Interpreter Command line arguments:\n%s' % pprint.pformat(vars(args)))
+
+    # Add current working directory to sys.path
+
+    sys.path.insert(0, os.getcwd())
+
+    logging.info('Interpreter Initial sys.argv = %s' % sys.argv)
+
+    # Argument Passing
+
+    if args.arg:
+
+        sys.argv = [sys.argv[0]] + args.arg
+
+    logging.info('Interpreter Final sys.argv = %s' % sys.argv)
+
+    # Module as script mode (i.e. python -m 'os')
+
+    if args.module:
+
+        logging.info('*** Entering Module Mode ***')
+
+        locals_ = runpy.run_module(args.module)
+
+    # Max threads per pipe
+
+    locals_.update(__MAX_THREADS_PER_FLOW__=args.max_threads_per_flow)
+
+    # Command line mode (i.e. ./pythonect -c "'Hello world' -> print")
+
+    if args.command:
+
+        logging.info('*** Entering Command Mode ***')
+
+        pythonect.eval(args.command[0], globals_, locals_)
+
+    # Script-mode (i.e. ./pythonect script or #!/usr/bin/env pythonect)
+
+    if args.script:
+
+        logging.info('*** Entering Script Mode ***')
+
+        content = args.script.read()
+
+        scriptname, scriptextension = os.path.splitext(args.script.name)
+
+        logging.info('Script Filename = %s' % scriptname)
+
+        if scriptextension:
+
+            logging.info('Script Filename Extension = %s' % scriptextension)
+
+            parsers = pythonect.internal.parsers.get_parsers(os.path.abspath(os.path.join(os.path.dirname(pythonect.internal.parsers.__file__), '..', 'parsers')))
+
+            logging.debug('Compiling a List of Parsers:\n%s' % pprint.pformat(parsers))
+
+            content = parsers[scriptextension[1:]].parse(content)
+
+            logging.info('Using Parser %s to Parse `%s`' % (parsers[scriptextension[1:]], args.script.name))
+
+            if content is None:
+
+                raise Exception("Unable to parse %s with %s" % (scriptname, parsers[scriptextension[1:]].__repr__()))
+
+        else:
+
+            logging.warning("Couldn't find %s Filename Extension! Guesstimating Parser..." % args.script.name)
+
+        pythonect.eval(content, globals_, locals_)
+
+        args.script.close()
+
+    if not args.module and not args.command and not args.script:
+
+        args.interactive = True
+
+    else:
+
+        banner = ''
+
+    # Interactive-mode (i.e. ./pythonect)
+
+    if args.interactive:
+
+        logging.info('*** Entering Interactive Mode! ***\n\n')
+
+        # Pythonect's Banner (for -V, --version purposes)
+
+        banner = """Python %s\n[Pythonect %s] on %s\nType "help", "copyright", "credits" or "license" for more information.""" % (sys.version.split('\n')[0], pythonect.__version__, sys.platform)
+
+        PythonectInteractiveConsole(locals_).interact(banner)
+
+    return 0
+
+
+# Entry Point
+
+if __name__ == "__main__":
+
+    try:
+
+        sys.exit(main())
+
+    except ValueError as e:
+
+        pass

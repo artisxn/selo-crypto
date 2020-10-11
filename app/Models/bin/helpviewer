@@ -1,0 +1,4 @@
+#! /usr/bin/python2
+
+from wx.tools.helpviewer import main
+main()
